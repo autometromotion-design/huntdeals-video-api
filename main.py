@@ -1,12 +1,13 @@
+from flask import Flask, request, jsonify
 import os
-import uuid
 import tempfile
 import requests
-import numpy as np
-from flask import Flask, request, jsonify
-from moviepy.editor import VideoFileClip, VideoClip, CompositeVideoClip
+from PIL import Image
 Image.ANTIALIAS = Image.LANCZOS
 import boto3
+from moviepy.editor import *
+import numpy as np
+import uuid
 from botocore.config import Config
 
 app = Flask(__name__)
@@ -26,44 +27,38 @@ def download_file(url: str, suffix: str) -> str:
 
 
 def create_zoom_clip(image_path: str, duration: float) -> VideoClip:
-    """Background image with a smooth Ken Burns zoom from 100% to 115%."""
     max_zoom = 1.15
     img = Image.open(image_path).convert("RGB")
 
     large_w = int(TARGET_W * max_zoom) + 4
     large_h = int(TARGET_H * max_zoom) + 4
-    img_large = img.resize((large_w, large_h), Image.Resampling.LANCZOS)
+    img_large = img.resize((large_w, large_h), Image.LANCZOS)
     arr = np.array(img_large)
 
     def make_frame(t: float) -> np.ndarray:
         zoom = 1.0 + 0.15 * (t / duration) if duration > 0 else 1.0
-        # Shrink the crop window as zoom increases so the image appears larger
         crop_w = int(TARGET_W * max_zoom / zoom)
         crop_h = int(TARGET_H * max_zoom / zoom)
         x0 = (large_w - crop_w) // 2
         y0 = (large_h - crop_h) // 2
         cropped = arr[y0 : y0 + crop_h, x0 : x0 + crop_w]
         return np.array(
-            Image.fromarray(cropped).resize(
-                (TARGET_W, TARGET_H), Image.Resampling.LANCZOS
-            )
+            Image.fromarray(cropped).resize((TARGET_W, TARGET_H), Image.LANCZOS)
         )
 
     return VideoClip(make_frame, duration=duration)
 
 
 def apply_chroma_key(
-    clip: VideoFileClip,
+    clip,
     key_color: tuple = (241, 241, 241),
     tolerance: int = 30,
-) -> VideoFileClip:
-    """Remove the solid background colour from the avatar clip."""
+):
     key = np.array(key_color, dtype=np.float32)
 
     def mask_frame(gf, t: float) -> np.ndarray:
         frame = gf(t).astype(np.float32)
         diff = np.max(np.abs(frame[:, :, :3] - key), axis=2)
-        # 1.0 = keep pixel, 0.0 = transparent
         return (diff >= tolerance).astype(np.float32)
 
     mask = VideoClip(
@@ -105,32 +100,25 @@ def process_video():
     if not data or "avatar_url" not in data or "product_url" not in data:
         return jsonify({"error": "avatar_url and product_url are required"}), 400
 
-    tmp_files: list[str] = []
+    tmp_files = []
     try:
-        # ── 1. Download inputs ──────────────────────────────────────────────
         avatar_path = download_file(data["avatar_url"], ".mp4")
         product_path = download_file(data["product_url"], ".jpg")
         tmp_files.extend([avatar_path, product_path])
 
-        # ── 2. Load avatar ──────────────────────────────────────────────────
         avatar_clip = VideoFileClip(avatar_path)
         duration = avatar_clip.duration
 
-        # ── 3. Background: product image with zoom effect ───────────────────
         bg_clip = create_zoom_clip(product_path, duration)
 
-        # ── 4. Chroma key: remove grey background ───────────────────────────
         avatar_clip = apply_chroma_key(avatar_clip)
 
-        # ── 5. Resize avatar to 42 % width × 35 % height ────────────────────
         av_w = int(TARGET_W * 0.42)
         av_h = int(TARGET_H * 0.35)
         avatar_clip = avatar_clip.resize((av_w, av_h))
 
-        # ── 6. Position: bottom-left corner ─────────────────────────────────
         avatar_clip = avatar_clip.set_position((0, TARGET_H - av_h))
 
-        # ── 7. Composite ────────────────────────────────────────────────────
         final = CompositeVideoClip(
             [bg_clip, avatar_clip], size=(TARGET_W, TARGET_H)
         ).set_duration(duration)
@@ -138,7 +126,6 @@ def process_video():
         if avatar_clip.audio:
             final = final.set_audio(avatar_clip.audio)
 
-        # ── 8. Export ────────────────────────────────────────────────────────
         output_path = tempfile.mktemp(suffix=".mp4")
         tmp_files.append(output_path)
         final.write_videofile(
@@ -152,7 +139,6 @@ def process_video():
             logger=None,
         )
 
-        # ── 9. Upload to Cloudflare R2 ───────────────────────────────────────
         filename = f"processed_{uuid.uuid4().hex}.mp4"
         public_url = upload_to_r2(output_path, filename)
 
