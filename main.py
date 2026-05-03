@@ -14,6 +14,7 @@ app = Flask(__name__)
 
 TARGET_W = 720
 TARGET_H = 1280
+PRODUCT_H = int(TARGET_H * 0.65)  # top 65% of frame
 
 
 def download_file(url: str, suffix: str) -> str:
@@ -26,24 +27,24 @@ def download_file(url: str, suffix: str) -> str:
     return tmp.name
 
 
-def create_zoom_clip(image_path: str, duration: float) -> VideoClip:
+def create_zoom_clip(image_path: str, duration: float, out_w: int, out_h: int) -> VideoClip:
     max_zoom = 1.15
     img = Image.open(image_path).convert("RGB")
 
-    large_w = int(TARGET_W * max_zoom) + 4
-    large_h = int(TARGET_H * max_zoom) + 4
+    large_w = int(out_w * max_zoom) + 4
+    large_h = int(out_h * max_zoom) + 4
     img_large = img.resize((large_w, large_h), Image.LANCZOS)
     arr = np.array(img_large)
 
     def make_frame(t: float) -> np.ndarray:
         zoom = 1.0 + 0.15 * (t / duration) if duration > 0 else 1.0
-        crop_w = int(TARGET_W * max_zoom / zoom)
-        crop_h = int(TARGET_H * max_zoom / zoom)
+        crop_w = int(out_w * max_zoom / zoom)
+        crop_h = int(out_h * max_zoom / zoom)
         x0 = (large_w - crop_w) // 2
         y0 = (large_h - crop_h) // 2
         cropped = arr[y0 : y0 + crop_h, x0 : x0 + crop_w]
         return np.array(
-            Image.fromarray(cropped).resize((TARGET_W, TARGET_H), Image.LANCZOS)
+            Image.fromarray(cropped).resize((out_w, out_h), Image.LANCZOS)
         )
 
     return VideoClip(make_frame, duration=duration)
@@ -52,7 +53,7 @@ def create_zoom_clip(image_path: str, duration: float) -> VideoClip:
 def apply_chroma_key(
     clip,
     key_color: tuple = (241, 241, 241),
-    tolerance: int = 30,
+    tolerance: int = 50,
 ):
     key = np.array(key_color, dtype=np.float32)
 
@@ -109,18 +110,28 @@ def process_video():
         avatar_clip = VideoFileClip(avatar_path)
         duration = avatar_clip.duration
 
-        bg_clip = create_zoom_clip(product_path, duration)
+        # White background for full frame
+        white_bg = ColorClip(size=(TARGET_W, TARGET_H), color=(255, 255, 255)).set_duration(duration)
 
-        avatar_clip = apply_chroma_key(avatar_clip)
+        # Product image: 100% width, 65% height, pinned to top
+        product_clip = create_zoom_clip(product_path, duration, TARGET_W, PRODUCT_H)
+        product_clip = product_clip.set_position(("center", 0))
 
-        av_w = int(TARGET_W * 0.42)
-        av_h = int(TARGET_H * 0.35)
-        avatar_clip = avatar_clip.resize((av_w, av_h))
+        # Chroma key with tolerance=50
+        avatar_clip = apply_chroma_key(avatar_clip, tolerance=50)
 
-        avatar_clip = avatar_clip.set_position((0, TARGET_H - av_h))
+        # Avatar: 48% width, maintain aspect ratio
+        av_w = int(TARGET_W * 0.48)
+        avatar_clip = avatar_clip.resize(width=av_w)
+        av_h = avatar_clip.size[1]
+
+        # Position: 2% left margin, 0% bottom margin
+        av_x = int(TARGET_W * 0.02)
+        av_y = TARGET_H - av_h
+        avatar_clip = avatar_clip.set_position((av_x, av_y))
 
         final = CompositeVideoClip(
-            [bg_clip, avatar_clip], size=(TARGET_W, TARGET_H)
+            [white_bg, product_clip, avatar_clip], size=(TARGET_W, TARGET_H)
         ).set_duration(duration)
 
         if avatar_clip.audio:
