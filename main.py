@@ -5,7 +5,7 @@ import requests
 import numpy as np
 from flask import Flask, request, jsonify
 from moviepy.editor import VideoFileClip, VideoClip, CompositeVideoClip
-from PIL import Image
+Image.ANTIALIAS = Image.LANCZOS
 import boto3
 from botocore.config import Config
 
