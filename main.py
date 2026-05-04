@@ -1,20 +1,55 @@
-from flask import Flask, request, jsonify
 import os
+import subprocess
+import sys
+import uuid
 import tempfile
 import requests
-from PIL import Image
-Image.ANTIALIAS = Image.LANCZOS
-import boto3
-from moviepy.editor import *
 import numpy as np
-import uuid
+from flask import Flask, request, jsonify
+from moviepy.editor import VideoFileClip, VideoClip, ImageClip, CompositeVideoClip
+from PIL import Image, ImageDraw, ImageFont
+import boto3
 from botocore.config import Config
+
+
+def ensure_fonts():
+    """Install DejaVu fonts if not present on the system."""
+    test_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    if not os.path.exists(test_path):
+        try:
+            subprocess.run(
+                ["apt-get", "install", "-y", "--no-install-recommends", "fonts-dejavu-core"],
+                check=True,
+                capture_output=True,
+            )
+        except Exception:
+            pass
+
+
+ensure_fonts()
 
 app = Flask(__name__)
 
 TARGET_W = 720
 TARGET_H = 1280
-PRODUCT_H = int(TARGET_H * 0.65)  # top 65% of frame
+
+# Font search order for Ubuntu/Railway
+_FONT_PATHS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+]
+
+
+def _load_font(size: int) -> ImageFont.FreeTypeFont:
+    for path in _FONT_PATHS:
+        try:
+            return ImageFont.truetype(path, size)
+        except (IOError, OSError):
+            pass
+    return ImageFont.load_default()
 
 
 def download_file(url: str, suffix: str) -> str:
@@ -27,34 +62,19 @@ def download_file(url: str, suffix: str) -> str:
     return tmp.name
 
 
-def create_zoom_clip(image_path: str, duration: float, out_w: int, out_h: int) -> VideoClip:
-    max_zoom = 1.15
+def create_static_bg(image_path: str, duration: float) -> ImageClip:
+    """Background product image — static, no zoom."""
     img = Image.open(image_path).convert("RGB")
-
-    large_w = int(out_w * max_zoom) + 4
-    large_h = int(out_h * max_zoom) + 4
-    img_large = img.resize((large_w, large_h), Image.LANCZOS)
-    arr = np.array(img_large)
-
-    def make_frame(t: float) -> np.ndarray:
-        zoom = 1.0 + 0.15 * (t / duration) if duration > 0 else 1.0
-        crop_w = int(out_w * max_zoom / zoom)
-        crop_h = int(out_h * max_zoom / zoom)
-        x0 = (large_w - crop_w) // 2
-        y0 = (large_h - crop_h) // 2
-        cropped = arr[y0 : y0 + crop_h, x0 : x0 + crop_w]
-        return np.array(
-            Image.fromarray(cropped).resize((out_w, out_h), Image.LANCZOS)
-        )
-
-    return VideoClip(make_frame, duration=duration)
+    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    return ImageClip(np.array(img)).set_duration(duration)
 
 
 def apply_chroma_key(
-    clip,
+    clip: VideoFileClip,
     key_color: tuple = (241, 241, 241),
-    tolerance: int = 50,
-):
+    tolerance: int = 30,
+) -> VideoFileClip:
+    """Remove the solid background colour from the avatar clip."""
     key = np.array(key_color, dtype=np.float32)
 
     def mask_frame(gf, t: float) -> np.ndarray:
@@ -90,6 +110,105 @@ def upload_to_r2(file_path: str, filename: str) -> str:
     return f"{public_base}/{filename}"
 
 
+def create_price_overlay(
+    price: str,
+    original_price: str | None,
+    discount: str | None,
+    duration: float,
+) -> ImageClip:
+    """Render a price card (white rounded rect) as a MoviePy ImageClip."""
+    PAD_H = 14
+    PAD_V = 10
+    GAP = 8
+    BADGE_PAD_H = 12
+    BADGE_PAD_V = 5
+    RADIUS = 16
+
+    font_price = _load_font(52)
+    font_orig  = _load_font(28)
+    font_badge = _load_font(26)
+
+    # ── Measure text extents ────────────────────────────────────────────────
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+
+    def measure(text: str, font) -> tuple[int, int]:
+        bb = probe.textbbox((0, 0), text, font=font)
+        return bb[2] - bb[0], bb[3] - bb[1]
+
+    price_w, price_h = measure(price, font_price)
+
+    orig_w = orig_h = 0
+    if original_price:
+        orig_w, orig_h = measure(original_price, font_orig)
+
+    badge_w = badge_h = 0
+    badge_text = ""
+    if discount:
+        badge_text = f"{discount} OFF"
+        btw, bth = measure(badge_text, font_badge)
+        badge_w = btw + BADGE_PAD_H * 2
+        badge_h = bth + BADGE_PAD_V * 2
+
+    # ── Block dimensions ────────────────────────────────────────────────────
+    content_w = max(price_w, orig_w, badge_w)
+    content_h = price_h
+    if original_price:
+        content_h += orig_h + GAP
+    if discount:
+        content_h += badge_h + GAP
+
+    block_w = content_w + PAD_H * 2
+    block_h = content_h + PAD_V * 2
+
+    # ── Draw card ───────────────────────────────────────────────────────────
+    img  = Image.new("RGBA", (block_w, block_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    draw.rounded_rectangle(
+        [0, 0, block_w - 1, block_h - 1],
+        radius=RADIUS,
+        fill=(255, 255, 255, 240),
+    )
+
+    y = PAD_V
+
+    if original_price:
+        x = PAD_H + (content_w - orig_w) // 2
+        draw.text((x, y), original_price, font=font_orig, fill=(153, 153, 153, 255))
+        # Strikethrough line
+        strike_y = y + orig_h // 2
+        draw.line([(x, strike_y), (x + orig_w, strike_y)], fill=(153, 153, 153, 255), width=2)
+        y += orig_h + GAP
+
+    x = PAD_H + (content_w - price_w) // 2
+    draw.text((x, y), price, font=font_price, fill=(26, 26, 26, 255))
+    y += price_h + GAP
+
+    if discount:
+        badge_x = PAD_H + (content_w - badge_w) // 2
+        draw.rounded_rectangle(
+            [badge_x, y, badge_x + badge_w, y + badge_h],
+            radius=badge_h // 2,
+            fill=(229, 57, 53, 255),
+        )
+        btw, bth = measure(badge_text, font_badge)
+        draw.text(
+            (badge_x + BADGE_PAD_H, y + BADGE_PAD_V),
+            badge_text,
+            font=font_badge,
+            fill=(255, 255, 255, 255),
+        )
+
+    # ── Wrap as MoviePy clip with alpha mask ────────────────────────────────
+    arr   = np.array(img)
+    rgb   = arr[:, :, :3]
+    alpha = arr[:, :, 3] / 255.0
+
+    clip = ImageClip(rgb).set_duration(duration)
+    mask = ImageClip(alpha, ismask=True).set_duration(duration)
+    return clip.set_mask(mask)
+
+
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -101,42 +220,57 @@ def process_video():
     if not data or "avatar_url" not in data or "product_url" not in data:
         return jsonify({"error": "avatar_url and product_url are required"}), 400
 
-    tmp_files = []
+    price          = data.get("price")           # e.g. "$29.99"
+    original_price = data.get("original_price")  # e.g. "$49.99"
+    discount       = data.get("discount")        # e.g. "40%"
+
+    tmp_files: list[str] = []
     try:
-        avatar_path = download_file(data["avatar_url"], ".mp4")
+        # ── 1. Download inputs ──────────────────────────────────────────────
+        avatar_path  = download_file(data["avatar_url"], ".mp4")
         product_path = download_file(data["product_url"], ".jpg")
         tmp_files.extend([avatar_path, product_path])
 
+        # ── 2. Load avatar ──────────────────────────────────────────────────
         avatar_clip = VideoFileClip(avatar_path)
-        duration = avatar_clip.duration
+        duration    = avatar_clip.duration
 
-        # White background for full frame
-        white_bg = ColorClip(size=(TARGET_W, TARGET_H), color=(255, 255, 255)).set_duration(duration)
+        # ── 3. Background: static product image ────────────────────────────
+        bg_clip = create_static_bg(product_path, duration)
 
-        # Product image: 100% width, 65% height, pinned to top
-        product_clip = create_zoom_clip(product_path, duration, TARGET_W, PRODUCT_H)
-        product_clip = product_clip.set_position(("center", 0))
+        # ── 4. Chroma key: remove grey background ───────────────────────────
+        avatar_clip = apply_chroma_key(avatar_clip)
 
-        # Chroma key with tolerance=50
-        avatar_clip = apply_chroma_key(avatar_clip, tolerance=50)
-
-        # Avatar: 48% width, maintain aspect ratio
-        av_w = int(TARGET_W * 0.48)
+        # ── 5. Resize avatar to 48 % width (aspect ratio preserved) ─────────
+        av_w        = int(TARGET_W * 0.48)
         avatar_clip = avatar_clip.resize(width=av_w)
-        av_h = avatar_clip.size[1]
+        av_h        = avatar_clip.h
 
-        # Position: 2% left margin, 0% bottom margin
-        av_x = int(TARGET_W * 0.02)
-        av_y = TARGET_H - av_h
-        avatar_clip = avatar_clip.set_position((av_x, av_y))
+        # ── 6. Position: center-left bottom (margin 12 % left, 2 % bottom) ──
+        margin_left   = int(TARGET_W * 0.12)
+        margin_bottom = int(TARGET_H * 0.02)
+        avatar_clip   = avatar_clip.set_position((margin_left, TARGET_H - av_h - margin_bottom))
 
-        final = CompositeVideoClip(
-            [white_bg, product_clip, avatar_clip], size=(TARGET_W, TARGET_H)
-        ).set_duration(duration)
+        # ── 7. Price overlay (bottom-right, optional) ────────────────────────
+        layers = [bg_clip, avatar_clip]
+
+        if price:
+            overlay     = create_price_overlay(price, original_price, discount, duration)
+            ov_w, ov_h  = overlay.size
+            margin_right  = int(TARGET_W * 0.03)
+            margin_bottom_price = int(TARGET_H * 0.04)
+            ov_x = TARGET_W - ov_w - margin_right
+            ov_y = TARGET_H - ov_h - margin_bottom_price
+            overlay = overlay.set_position((ov_x, ov_y))
+            layers.append(overlay)
+
+        # ── 8. Composite ────────────────────────────────────────────────────
+        final = CompositeVideoClip(layers, size=(TARGET_W, TARGET_H)).set_duration(duration)
 
         if avatar_clip.audio:
             final = final.set_audio(avatar_clip.audio)
 
+        # ── 9. Export ────────────────────────────────────────────────────────
         output_path = tempfile.mktemp(suffix=".mp4")
         tmp_files.append(output_path)
         final.write_videofile(
@@ -150,7 +284,8 @@ def process_video():
             logger=None,
         )
 
-        filename = f"processed_{uuid.uuid4().hex}.mp4"
+        # ── 10. Upload to Cloudflare R2 ──────────────────────────────────────
+        filename   = f"processed_{uuid.uuid4().hex}.mp4"
         public_url = upload_to_r2(output_path, filename)
 
         return jsonify({"url": public_url})
