@@ -127,16 +127,16 @@ def create_price_overlay(
     duration: float,
 ) -> ImageClip:
     """Render a price card (white rounded rect) as a MoviePy ImageClip."""
-    PAD_H = 126
-    PAD_V = 90
-    GAP = 72
-    BADGE_PAD_H = 108
-    BADGE_PAD_V = 45
-    RADIUS = 144
+    PAD_H = 30
+    PAD_V = 20
+    GAP = 14
+    BADGE_PAD_H = 22
+    BADGE_PAD_V = 10
+    RADIUS = 30
 
-    font_price = _load_font(468)
-    font_orig  = _load_font(252)
-    font_badge = _load_font(234)
+    font_price = _load_font(110)
+    font_orig  = _load_font(60)
+    font_badge = _load_font(55)
 
     # ── Measure text extents ────────────────────────────────────────────────
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -252,7 +252,7 @@ def process_video():
         avatar_clip = apply_chroma_key(avatar_clip)
 
         # ── 5. Resize avatar — 10 % larger than previous ────────────────────
-        av_w        = int(TARGET_W * 0.4224)
+        av_w        = int(TARGET_W * 0.4646)
         avatar_clip = avatar_clip.resize(width=av_w)
         av_h        = avatar_clip.h
 
