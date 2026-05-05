@@ -252,7 +252,7 @@ def process_video():
         avatar_clip = apply_chroma_key(avatar_clip)
 
         # ── 5. Resize avatar — 10 % larger than previous ────────────────────
-        av_w        = int(TARGET_W * 0.4646)
+        av_w        = int(TARGET_W * 0.4507)
         avatar_clip = avatar_clip.resize(width=av_w)
         av_h        = avatar_clip.h
 
