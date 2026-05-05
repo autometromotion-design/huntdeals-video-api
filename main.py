@@ -53,7 +53,10 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def download_file(url: str, suffix: str) -> str:
-    resp = requests.get(url, stream=True, timeout=120)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    resp = requests.get(url, stream=True, timeout=120, headers=headers)
     resp.raise_for_status()
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     for chunk in resp.iter_content(chunk_size=65536):
