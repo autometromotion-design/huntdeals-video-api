@@ -127,16 +127,16 @@ def create_price_overlay(
     duration: float,
 ) -> ImageClip:
     """Render a price card (white rounded rect) as a MoviePy ImageClip."""
-    PAD_H = 42
-    PAD_V = 30
-    GAP = 24
-    BADGE_PAD_H = 36
-    BADGE_PAD_V = 15
-    RADIUS = 48
+    PAD_H = 126
+    PAD_V = 90
+    GAP = 72
+    BADGE_PAD_H = 108
+    BADGE_PAD_V = 45
+    RADIUS = 144
 
-    font_price = _load_font(156)
-    font_orig  = _load_font(84)
-    font_badge = _load_font(78)
+    font_price = _load_font(468)
+    font_orig  = _load_font(252)
+    font_badge = _load_font(234)
 
     # ── Measure text extents ────────────────────────────────────────────────
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -251,8 +251,8 @@ def process_video():
         # ── 4. Chroma key: remove grey background ───────────────────────────
         avatar_clip = apply_chroma_key(avatar_clip)
 
-        # ── 5. Resize avatar to 38 % width — 20 % smaller than before ───────
-        av_w        = int(TARGET_W * 0.384)
+        # ── 5. Resize avatar — 10 % larger than previous ────────────────────
+        av_w        = int(TARGET_W * 0.4224)
         avatar_clip = avatar_clip.resize(width=av_w)
         av_h        = avatar_clip.h
 
@@ -266,12 +266,13 @@ def process_video():
         layers = [bg_clip, avatar_clip]
 
         if price:
-            overlay     = create_price_overlay(price, original_price, discount, duration)
-            ov_w, ov_h  = overlay.size
-            margin_right  = int(TARGET_W * 0.03)
-            margin_bottom_price = int(TARGET_H * 0.04)
-            ov_x = TARGET_W - ov_w - margin_right
-            ov_y = TARGET_H - ov_h - margin_bottom_price
+            overlay    = create_price_overlay(price, original_price, discount, duration)
+            ov_w, ov_h = overlay.size
+            # Center in bottom-right quadrant, clamped to stay on screen
+            ov_x = TARGET_W // 2 + (TARGET_W // 2 - ov_w) // 2
+            ov_y = TARGET_H // 2 + (TARGET_H // 2 - ov_h) // 2
+            ov_x = max(TARGET_W // 2, min(ov_x, TARGET_W - ov_w))
+            ov_y = max(TARGET_H // 2, min(ov_y, TARGET_H - ov_h))
             overlay = overlay.set_position((ov_x, ov_y))
             layers.append(overlay)
 
