@@ -8,6 +8,10 @@ import numpy as np
 from flask import Flask, request, jsonify
 from moviepy.editor import VideoFileClip, VideoClip, ImageClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
+
+# Pillow 10+ removed ANTIALIAS; MoviePy still references it internally
+if not hasattr(Image, "ANTIALIAS"):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
 import boto3
 from botocore.config import Config
 
