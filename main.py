@@ -70,10 +70,13 @@ def download_file(url: str, suffix: str) -> str:
 
 
 def create_static_bg(image_path: str, duration: float) -> ImageClip:
-    """Background product image — static, no zoom."""
+    """Product image fills top 50% of canvas; bottom 50% is white."""
+    half_h = TARGET_H // 2
     img = Image.open(image_path).convert("RGB")
-    img = img.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-    return ImageClip(np.array(img)).set_duration(duration)
+    img = img.resize((TARGET_W, half_h), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (TARGET_W, TARGET_H), (255, 255, 255))
+    canvas.paste(img, (0, 0))
+    return ImageClip(np.array(canvas)).set_duration(duration)
 
 
 def apply_chroma_key(
@@ -124,16 +127,16 @@ def create_price_overlay(
     duration: float,
 ) -> ImageClip:
     """Render a price card (white rounded rect) as a MoviePy ImageClip."""
-    PAD_H = 14
-    PAD_V = 10
-    GAP = 8
-    BADGE_PAD_H = 12
-    BADGE_PAD_V = 5
-    RADIUS = 16
+    PAD_H = 42
+    PAD_V = 30
+    GAP = 24
+    BADGE_PAD_H = 36
+    BADGE_PAD_V = 15
+    RADIUS = 48
 
-    font_price = _load_font(52)
-    font_orig  = _load_font(28)
-    font_badge = _load_font(26)
+    font_price = _load_font(156)
+    font_orig  = _load_font(84)
+    font_badge = _load_font(78)
 
     # ── Measure text extents ────────────────────────────────────────────────
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
