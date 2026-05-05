@@ -251,15 +251,16 @@ def process_video():
         # ── 4. Chroma key: remove grey background ───────────────────────────
         avatar_clip = apply_chroma_key(avatar_clip)
 
-        # ── 5. Resize avatar to 48 % width (aspect ratio preserved) ─────────
-        av_w        = int(TARGET_W * 0.48)
+        # ── 5. Resize avatar to 38 % width — 20 % smaller than before ───────
+        av_w        = int(TARGET_W * 0.384)
         avatar_clip = avatar_clip.resize(width=av_w)
         av_h        = avatar_clip.h
 
-        # ── 6. Position: center-left bottom (margin 12 % left, 2 % bottom) ──
-        margin_left   = int(TARGET_W * 0.12)
+        # ── 6. Center avatar in bottom-left quadrant ─────────────────────────
         margin_bottom = int(TARGET_H * 0.02)
-        avatar_clip   = avatar_clip.set_position((margin_left, TARGET_H - av_h - margin_bottom))
+        x = (TARGET_W // 2 - av_w) // 2        # centered within left half
+        y = TARGET_H - av_h - margin_bottom
+        avatar_clip = avatar_clip.set_position((x, y))
 
         # ── 7. Price overlay (bottom-right, optional) ────────────────────────
         layers = [bg_clip, avatar_clip]
