@@ -1,3 +1,4 @@
+import io
 import os
 import subprocess
 import sys
@@ -126,97 +127,77 @@ def create_price_tag_overlay(
     discount: str | None,
     duration: float,
 ) -> ImageClip:
-    """Retail price tag: black octagon / yellow price banner / red discount circle."""
-    TW     = 310
-    CUT    = 38
-    HOLE_R = 20
-    GAP    = 12
+    """Load tag.jpg template from R2, remove white bg, paint dynamic prices on top."""
+    tag_url = os.environ["R2_PUBLIC_URL"].rstrip("/") + "/tag.jpg"
+    resp = requests.get(tag_url, timeout=30, headers={
+        "User-Agent": "Mozilla/5.0"
+    })
+    resp.raise_for_status()
+    template = Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
-    font_price = _load_font(88)
-    font_orig  = _load_font(50)
-    font_disc  = _load_font(46)
+    # ── Remove white background ──────────────────────────────────────────────
+    data = np.array(template, dtype=np.float32)
+    white_mask = (data[:, :, 0] > 240) & (data[:, :, 1] > 240) & (data[:, :, 2] > 240)
+    data[white_mask, 3] = 0
+    template = Image.fromarray(data.astype(np.uint8))
+
+    # ── Scale to fit right quadrant (max 320 px wide) ───────────────────────
+    TW    = 320
+    ratio = TW / template.width
+    TH    = int(template.height * ratio)
+    template = template.resize((TW, TH), Image.Resampling.LANCZOS)
+    draw = ImageDraw.Draw(template)
 
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-
     def measure(text: str, font) -> tuple[int, int]:
         bb = probe.textbbox((0, 0), text, font=font)
         return bb[2] - bb[0], bb[3] - bb[1]
 
-    # ── Section heights ─────────────────────────────────────────────────────
-    hole_section = HOLE_R * 2 + GAP
+    # Zone proportions (tuned to tag.jpg layout)
+    # Black top zone:  y  8% – 38%   original price
+    # Yellow zone:     y 38% – 64%   current price
+    # Red zone:        y 64% – 95%   discount circle
+    top_y1, top_y2 = int(TH * 0.08), int(TH * 0.38)
+    mid_y1, mid_y2 = int(TH * 0.38), int(TH * 0.64)
+    bot_y1, bot_y2 = int(TH * 0.64), int(TH * 0.95)
+
+    # ── Erase baked-in numbers with section background colours ───────────────
+    pad_x = int(TW * 0.08)
     if original_price:
-        _, oh = measure(original_price, font_orig)
-        top_h = hole_section + oh + GAP * 2
-    else:
-        top_h = hole_section + GAP
-
-    _, ph = measure(price, font_price)
-    mid_h = ph + GAP * 3
-
+        draw.rectangle([pad_x, top_y1, TW - pad_x, top_y2], fill=(18, 18, 18, 255))
+    draw.rectangle([pad_x, mid_y1, TW - pad_x, mid_y2], fill=(255, 200, 0, 255))
     if discount:
-        _, dh = measure(discount, font_disc)
-        circ_r = max(measure(discount, font_disc)) // 2 + 22
-        bot_h  = circ_r * 2 + GAP * 3
-    else:
-        bot_h = 0
+        cx, cy = TW // 2, (bot_y1 + bot_y2) // 2
+        cr = (bot_y2 - bot_y1) // 2 - int(TH * 0.03)
+        draw.ellipse([cx - cr, cy - cr, cx + cr, cy + cr], fill=(18, 18, 18, 255))
 
-    TH = top_h + mid_h + bot_h
-
-    # ── Color bands ─────────────────────────────────────────────────────────
-    img  = Image.new("RGBA", (TW, TH), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0,               TW, top_h],           fill=(18,  18,  18,  255))
-    draw.rectangle([0, top_h,           TW, top_h + mid_h],   fill=(255, 200,  0,  255))
-    if discount:
-        draw.rectangle([0, top_h + mid_h, TW, TH],            fill=(170,  15,  15, 255))
-
-    # ── Clip everything to octagon ───────────────────────────────────────────
-    oct_pts = [
-        (CUT, 0),      (TW - CUT, 0),
-        (TW,  CUT),    (TW, TH - CUT),
-        (TW - CUT, TH),(CUT, TH),
-        (0,  TH - CUT),(0,  CUT),
-    ]
-    oct_mask = Image.new("L", (TW, TH), 0)
-    ImageDraw.Draw(oct_mask).polygon(oct_pts, fill=255)
-    r, g, b, _ = img.split()
-    img = Image.merge("RGBA", (r, g, b, oct_mask))
-
-    # ── Hole at top center ───────────────────────────────────────────────────
-    draw = ImageDraw.Draw(img)
-    hx, hy = TW // 2, HOLE_R + 5
-    draw.ellipse([hx - HOLE_R, hy - HOLE_R, hx + HOLE_R, hy + HOLE_R], fill=(0, 0, 0, 0))
-
-    # ── Original price with diagonal red strikethrough ───────────────────────
+    # ── Draw original price (white, red diagonal strikethrough) ─────────────
     if original_price:
-        ow, oh = measure(original_price, font_orig)
+        font_orig = _load_font(int((top_y2 - top_y1) * 0.52))
+        ow, oh    = measure(original_price, font_orig)
         ox = (TW - ow) // 2
-        oy = hy + HOLE_R + GAP
+        oy = top_y1 + ((top_y2 - top_y1) - oh) // 2
         draw.text((ox, oy), original_price, font=font_orig, fill=(255, 255, 255, 255))
         sy = oy + oh // 2
-        draw.line([(ox - 10, sy - 5), (ox + ow + 10, sy + 5)], fill=(220, 30, 30, 255), width=5)
+        draw.line([(ox - 8, sy - 5), (ox + ow + 8, sy + 5)], fill=(220, 30, 30, 255), width=5)
 
-    # ── Current price on yellow banner ───────────────────────────────────────
-    pw, ph = measure(price, font_price)
+    # ── Draw current price (black on yellow) ─────────────────────────────────
+    font_price = _load_font(int((mid_y2 - mid_y1) * 0.72))
+    pw, ph     = measure(price, font_price)
     px = (TW - pw) // 2
-    py = top_h + (mid_h - ph) // 2
-    draw.text((px + 3, py + 3), price, font=font_price, fill=(80, 60, 0, 160))   # shadow
+    py = mid_y1 + ((mid_y2 - mid_y1) - ph) // 2
+    draw.text((px + 3, py + 3), price, font=font_price, fill=(80, 60, 0, 160))
     draw.text((px, py),         price, font=font_price, fill=(18, 18, 18, 255))
 
-    # ── Discount circle on red section ───────────────────────────────────────
+    # ── Draw discount (white in black circle) ────────────────────────────────
     if discount:
-        dw, dh = measure(discount, font_disc)
-        circ_r = max(dw, dh) // 2 + 22
-        cx = TW // 2
-        cy = top_h + mid_h + bot_h // 2
-        draw.ellipse([cx - circ_r - 6, cy - circ_r - 6, cx + circ_r + 6, cy + circ_r + 6],
-                     fill=(220, 30, 30, 255))
-        draw.ellipse([cx - circ_r,     cy - circ_r,     cx + circ_r,     cy + circ_r],
-                     fill=(18, 18, 18, 255))
-        draw.text((cx - dw // 2, cy - dh // 2), discount, font=font_disc, fill=(255, 255, 255, 255))
+        font_disc = _load_font(int(cr * 0.72))
+        dw, dh    = measure(discount, font_disc)
+        draw.text((cx - dw // 2, cy - dh // 2), discount, font=font_disc,
+                  fill=(255, 255, 255, 255))
 
     # ── Wrap as MoviePy clip ─────────────────────────────────────────────────
-    arr   = np.array(img)
+    arr   = np.array(template)
     rgb   = arr[:, :, :3]
     alpha = arr[:, :, 3] / 255.0
     clip  = ImageClip(rgb).set_duration(duration)
