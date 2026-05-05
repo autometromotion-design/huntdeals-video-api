@@ -128,7 +128,7 @@ def create_price_tag_overlay(
     duration: float,
 ) -> ImageClip:
     """Load tag.jpg template from R2, remove white bg, paint dynamic prices on top."""
-    tag_url = os.environ["R2_PUBLIC_URL"].rstrip("/") + "/tag.jpg"
+    tag_url = os.environ["R2_PUBLIC_URL"].rstrip("/") + "/TAG.jpg"
     resp = requests.get(tag_url, timeout=30, headers={
         "User-Agent": "Mozilla/5.0"
     })
